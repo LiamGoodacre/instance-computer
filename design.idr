@@ -5,11 +5,13 @@ namespace Kinding
 
   -- | Possible kinds of type
   data RepKind
-    = (:=>) RepKind RepKind
+    = Arr RepKind RepKind
     | Star
     -- TODO: add Constraint, Row, etc
 
   infixr 4 :=>
+  (:=>) : RepKind -> RepKind -> RepKind
+  (:=>) = Arr
 
   RepKinds : Nat -> Type
   RepKinds n = Vect n RepKind
@@ -35,13 +37,11 @@ namespace Typing
     -- | Type variable
     Var : RepVar i ks k -> RepType ks k
     -- | Universal quantification
-    Forall : RepType (k :: ks) Star -> RepType ks Star
+    Forall : RepType (ks ++ [k]) Star -> RepType ks Star
     -- | Type application
     App : RepType ks (i :=> o) -> RepType ks i -> RepType ks o
     -- | Function type
-    (:->) : RepType ks Star -> RepType ks Star -> RepType ks Star
-
-  infixl 4 :->
+    Fun : RepType ks Star -> RepType ks Star -> RepType ks Star
 
   -- | Proper types have `Kind` `Star`
   ProperType : RepKinds n -> Type
@@ -50,6 +50,14 @@ namespace Typing
   -- var : (i : Fin n) -> {auto ks : RepKinds n} -> RepVar i ks (Vect.index i ks)
   var : (i : Fin n) -> RepType ks (Vect.index i ks)
   var i {ks} = Var (fromFin i ks)
+
+  infix 5 :$
+  (:$) : RepType ks (i :=> o) -> RepType ks i -> RepType ks o
+  (:$) = App
+
+  infixl 4 :->
+  (:->) : ProperType ks -> ProperType ks -> ProperType ks
+  (:->) = Fun
 
 
 namespace Filling
@@ -86,6 +94,9 @@ namespace DataTyping
     -- All constructors for the data type
     ctors : List (RepCtor kind)
 
+  self : RepType (k :: ks) k
+  self = var 0
+
 
 namespace DataExamples
 
@@ -101,7 +112,7 @@ namespace DataExamples
   --   False : Bool
   bool : RepData
   bool = MkData Star
-    [ MkCtor "true" [] [] []
+    [ MkCtor "true"  [] [] []
     , MkCtor "false" [] [] []
     ]
 
@@ -130,6 +141,24 @@ namespace DataExamples
     [ MkCtor "pair" [Star, Star] [var 1, var 2] [var 1, var 2]
     ]
 
+  -- List : * -> * where
+  --   Nil  : forall (t : *). List t
+  --   Cons : forall (t : *). t -> List t -> List t
+  list : RepData
+  list = MkData (Star :=> Star)
+    [ MkCtor "nil"  [Star] [] [var 1]
+    , MkCtor "cons" [Star] [var 1, self :$ var 1] [var 1]
+    ]
+
+  -- Coyoneda : (* -> *) -> * -> * where
+  --   Coyo : forall (f : * -> *) (a, b : *). (b -> a) -> (f b) -> Coyoneda f a
+  coyoneda : RepData
+  coyoneda = MkData ((Star :=> Star) :=> Star :=> Star)
+    [ MkCtor "coyo" [Star :=> Star, Star, Star]
+                    [var 3 :-> var 2, var 1 :$ var 2]
+                    [var 1, var 2]
+    ]
+
   -- Free : (* -> *) -> * -> * where
   --   Pure : forall (f : * -> *) (a : *). a -> Free f a
   --   Next : forall (f : * -> *) (a : *). f (Free f a) -> Free f a
@@ -137,8 +166,8 @@ namespace DataExamples
   free = MkData ((Star :=> Star) :=> Star :=> Star)
     [ MkCtor "pure" [Star :=> Star, Star] [var 2] [var 1, var 2]
     , MkCtor "next" [Star :=> Star, Star]
-             [App (var 1) (App (App (var 0) (var 1)) (var 2))]
-             [var 1, var 2]
+                    [var 1 :$ ((self :$ var 1) :$ var 2)]
+                    [var 1, var 2]
     ]
 
   -- Exists : (* -> *) -> * where
@@ -146,9 +175,10 @@ namespace DataExamples
   exists : RepData
   exists = MkData ((Star :=> Star) :=> Star)
     [ MkCtor "mkExists" [Star :=> Star]
-             [ Forall (Forall (App (var 2) (var 0) :-> var 1) :-> var 0)
-             ] [var 1]
+                        [Forall (Forall ((var 1 :$ var 3) :-> var 2) :-> var 2)]
+                        [var 1]
     ]
+
 
   {-
     POSSIBLE CONSIDERATIONS
