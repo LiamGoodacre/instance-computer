@@ -22,17 +22,9 @@ namespace VariableReferencing
     Stop : RepVar FZ (k :: ks) k
     Pop  : RepVar i ks k -> RepVar (FS i) (o :: ks) k
 
-  _0 : RepVar 0 (k :: _) k
-  _0 = Stop
-
-  _1 : RepVar 1 (_ :: k :: _) k
-  _1 = Pop _0
-
-  _2 : RepVar 2 (_ :: _ :: k :: _) k
-  _2 = Pop _1
-
-  _3 : RepVar 3 (_ :: _ :: _ :: k :: _) k
-  _3 = Pop _2
+  fromFin : (i : Fin n) -> (ks : RepKinds n) -> RepVar i ks (Vect.index i ks)
+  fromFin FZ (v :: vs) = Stop
+  fromFin (FS i) (v :: vs) = Pop (fromFin i vs)
 
 
 namespace Typing
@@ -53,6 +45,9 @@ namespace Typing
   ProperType : RepKinds n -> Type
   ProperType ks = RepType ks Star
 
+  -- var : (i : Fin n) -> {auto ks : RepKinds n} -> RepVar i ks (Vect.index i ks)
+  var : (i : Fin n) -> RepType ks (Vect.index i ks)
+  var i {ks} = Var (fromFin i ks)
 
 namespace Filling
   -- | Sequence of types to fill in the arguments of a higher kinded type
@@ -63,7 +58,7 @@ namespace Filling
 
   -- | Example: forall f a. Free f a
   filledKindExample : FilledKind [Star :=> Star, Star] ((Star :=> Star) :=> Star :=> Star)
-  filledKindExample = [Var Stop, Var (Pop Stop)]
+  filledKindExample = [var 0, var 1]
 
 
 namespace DataTyping
@@ -104,8 +99,8 @@ namespace DataExamples
   --   Just    : forall (t : *). t -> Maybe t
   maybe : RepData
   maybe = MkData (Star :=> Star)
-    [ MkCtor "nothing" [Star] []       [Var _1]
-    , MkCtor "just"    [Star] [Var _1] [Var _1]
+    [ MkCtor "nothing" [Star] []      [var 1]
+    , MkCtor "just"    [Star] [var 1] [var 1]
     ]
 
   -- Either : * -> * -> * where
@@ -113,15 +108,15 @@ namespace DataExamples
   --   Right : forall (l, r : *). r -> Either l r
   either : RepData
   either = MkData (Star :=> Star :=> Star)
-    [ MkCtor "left"  [Star, Star] [Var _1] [Var _1, Var _2]
-    , MkCtor "right" [Star, Star] [Var _2] [Var _1, Var _2]
+    [ MkCtor "left"  [Star, Star] [var 1] [var 1, var 2]
+    , MkCtor "right" [Star, Star] [var 2] [var 1, var 2]
     ]
 
   -- Pair : * -> * -> * where
   --   Pair : forall (l, r : *). l -> r -> Pair l r
   pair : RepData
   pair = MkData (Star :=> Star :=> Star)
-    [ MkCtor "pair" [Star, Star] [Var _1, Var _2] [Var _1, Var _2]
+    [ MkCtor "pair" [Star, Star] [var 1, var 2] [var 1, var 2]
     ]
 
   -- Free : (* -> *) -> * -> * where
@@ -129,10 +124,10 @@ namespace DataExamples
   --   Next : forall (f : * -> *) (a : *). f (Free f a) -> Free f a
   free : RepData
   free = MkData ((Star :=> Star) :=> Star :=> Star)
-    [ MkCtor "pure" [Star :=> Star, Star] [Var _2] [Var _1, Var _2]
+    [ MkCtor "pure" [Star :=> Star, Star] [var 2] [var 1, var 2]
     , MkCtor "next" [Star :=> Star, Star]
-             [App (Var _1) (App (App (Var _0) (Var _1)) (Var _2))]
-             [Var _1, Var _2]
+             [App (var 1) (App (App (var 0) (var 1)) (var 2))]
+             [var 1, var 2]
     ]
 
 
