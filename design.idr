@@ -51,7 +51,9 @@ namespace Typing
   var : (i : Fin n) -> RepType ks (Vect.index i ks)
   var i {ks} = Var (fromFin i ks)
 
+
 namespace Filling
+
   -- | Sequence of types to fill in the arguments of a higher kinded type
   -- | TODO: environment
   data FilledKind : (typeVars : RepKinds n) -> (kind : RepKind) -> Type where
