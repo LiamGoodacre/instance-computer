@@ -33,13 +33,15 @@ namespace Typing
   -- | TODO: environment
   data RepType : (scope : RepKinds n) -> (kindOfType : RepKind) -> Type where
     -- | Type variable
-    Var    : RepVar i ks k -> RepType ks k
+    Var : RepVar i ks k -> RepType ks k
     -- | Universal quantification
     Forall : RepType (k :: ks) Star -> RepType ks Star
     -- | Type application
-    App    : RepType ks (i :=> o) -> RepType ks i -> RepType ks o
+    App : RepType ks (i :=> o) -> RepType ks i -> RepType ks o
     -- | Function type
-    Fun    : RepType ks Star -> RepType ks Star -> RepType ks Star
+    (:->) : RepType ks Star -> RepType ks Star -> RepType ks Star
+
+  infixl 4 :->
 
   -- | Proper types have `Kind` `Star`
   ProperType : RepKinds n -> Type
@@ -53,7 +55,7 @@ namespace Filling
   -- | Sequence of types to fill in the arguments of a higher kinded type
   -- | TODO: environment
   data FilledKind : (typeVars : RepKinds n) -> (kind : RepKind) -> Type where
-    Nil : FilledKind ts Star
+    Nil  : FilledKind ts Star
     (::) : RepType ts d -> FilledKind ts c -> FilledKind ts (d :=> c)
 
   -- | Example: forall f a. Free f a
@@ -66,24 +68,31 @@ namespace DataTyping
   -- | Representation of a data type's constructors
   record RepCtor (dataKind : RepKind) where
     constructor MkCtor
-    name      : String
+    name : String
     -- | All top level type variables
-    typeVars  : RepKinds n
+    typeVars : RepKinds n
     -- | Constructor parameters with the `typeVars` and the data type in scope
-    params    : List (ProperType (dataKind :: typeVars))
+    params : List (ProperType (dataKind :: typeVars))
     -- | Type arguments of the resulting data type
-    finalTypeArgs : FilledKind (dataKind :: typeVars) kind
+    finalTypeArgs : FilledKind (dataKind :: typeVars) dataKind
 
   -- | Representation of data types
   record RepData where
     constructor MkData
     -- The `Kind` of the data type, e.g. kind of `Maybe` is `Arr Star Star`
-    kind  : RepKind
+    kind : RepKind
     -- All constructors for the data type
     ctors : List (RepCtor kind)
 
 
 namespace DataExamples
+
+  -- Unit : * where
+  --   Unit : Unit
+  unit : RepData
+  unit = MkData Star
+    [ MkCtor "unit" [] [] []
+    ]
 
   -- Bool : * where
   --   True : Bool
@@ -130,7 +139,14 @@ namespace DataExamples
              [var 1, var 2]
     ]
 
-
+  -- Exists : (* -> *) -> * where
+  --   MkExists : forall (p : * -> *). (forall r. (forall i. p i -> r) -> r) -> Exists p
+  exists : RepData
+  exists = MkData ((Star :=> Star) :=> Star)
+    [ MkCtor "mkExists" [Star :=> Star]
+             [ Forall (Forall (App (var 2) (var 0) :-> var 1) :-> var 0)
+             ] [var 1]
+    ]
 
   {-
     POSSIBLE CONSIDERATIONS
