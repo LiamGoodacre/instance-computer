@@ -1,5 +1,7 @@
-import Data.Vect
 import Data.Fin
+import Data.Vect
+import Data.Vect.Quantifiers
+
 
 namespace Kinding
 
@@ -20,11 +22,11 @@ namespace Kinding
 namespace VariableReferencing
 
   -- | Reference a variable in scope of a given `Kind`
-  data RepVar : Fin n -> (scope : RepKinds n) -> RepKind -> Type where
-    Stop : RepVar FZ (k :: ks) k
-    Pop  : RepVar i ks k -> RepVar (FS i) (o :: ks) k
+  data Item : Fin n -> Vect n t -> t -> Type where
+    Stop : Item FZ (k :: ks) k
+    Pop  : Item i ks k -> Item (FS i) (o :: ks) k
 
-  fromFin : (i : Fin n) -> (ks : RepKinds n) -> RepVar i ks (Vect.index i ks)
+  fromFin : (i : Fin n) -> (ks : RepKinds n) -> Item i ks (Vect.index i ks)
   fromFin FZ (v :: vs) = Stop
   fromFin (FS i) (v :: vs) = Pop (fromFin i vs)
 
@@ -32,44 +34,46 @@ namespace VariableReferencing
 namespace Typing
 
   -- | Representation of types
-  -- | TODO: environment
-  data RepType : (scope : RepKinds n) -> (kindOfType : RepKind) -> Type where
+  data RepType : (env : RepKinds e) -> (scope : RepKinds n) -> (kindOfType : RepKind) -> Type where
     -- | Type variable
-    Var : RepVar i ks k -> RepType ks k
+    Var : Item i ks k -> RepType es ks k
     -- | Universal quantification
-    Forall : RepType (ks ++ [k]) Star -> RepType ks Star
+    Forall : RepType es (ks ++ [k]) Star -> RepType es ks Star
     -- | Type application
-    App : RepType ks (i :=> o) -> RepType ks i -> RepType ks o
+    App : RepType es ks (i :=> o) -> RepType es ks i -> RepType es ks o
     -- | Function type
-    Fun : RepType ks Star -> RepType ks Star -> RepType ks Star
+    Fun : RepType es ks Star -> RepType es ks Star -> RepType es ks Star
+    -- | Reference types in the environment
+    Other : Item i es e -> RepType es ks e
 
   -- | Proper types have `Kind` `Star`
-  ProperType : RepKinds n -> Type
-  ProperType ks = RepType ks Star
+  ProperType : RepKinds e -> RepKinds n -> Type
+  ProperType es ks = RepType es ks Star
 
-  -- var : (i : Fin n) -> {auto ks : RepKinds n} -> RepVar i ks (Vect.index i ks)
-  var : (i : Fin n) -> RepType ks (Vect.index i ks)
+  var : (i : Fin n) -> RepType es ks (Vect.index i ks)
   var i {ks} = Var (fromFin i ks)
 
   infix 5 :$
-  (:$) : RepType ks (i :=> o) -> RepType ks i -> RepType ks o
+  (:$) : RepType es ks (i :=> o) -> RepType es ks i -> RepType es ks o
   (:$) = App
 
   infixl 4 :->
-  (:->) : ProperType ks -> ProperType ks -> ProperType ks
+  (:->) : ProperType es ks -> ProperType es ks -> ProperType es ks
   (:->) = Fun
+
+  other : (i : Fin n) -> RepType es ks (Vect.index i es)
+  other i {es} = Other (fromFin i es)
 
 
 namespace Filling
 
   -- | Sequence of types to fill in the arguments of a higher kinded type
-  -- | TODO: environment
-  data FilledKind : (typeVars : RepKinds n) -> (kind : RepKind) -> Type where
-    Nil  : FilledKind ts Star
-    (::) : RepType ts d -> FilledKind ts c -> FilledKind ts (d :=> c)
+  data FilledKind : (env : RepKinds e) -> (typeVars : RepKinds n) -> (kind : RepKind) -> Type where
+    Nil  : FilledKind es ts Star
+    (::) : RepType es ts d -> FilledKind es ts c -> FilledKind es ts (d :=> c)
 
   -- | Example: forall f a. Free f a
-  filledKindExample : FilledKind [Star :=> Star, Star] ((Star :=> Star) :=> Star :=> Star)
+  filledKindExample : FilledKind [] [Star :=> Star, Star] ((Star :=> Star) :=> Star :=> Star)
   filledKindExample = [var 0, var 1]
 
 
@@ -79,12 +83,14 @@ namespace DataTyping
   record RepCtor (dataKind : RepKind) where
     constructor MkCtor
     name : String
+    -- | Available types in the environment
+    environment : RepKinds e
     -- | All top level type variables
     typeVars : RepKinds n
     -- | Constructor parameters with the `typeVars` and the data type in scope
-    params : List (ProperType (dataKind :: typeVars))
+    params : Vect paramCount (ProperType environment (dataKind :: typeVars))
     -- | Type arguments of the resulting data type
-    finalTypeArgs : FilledKind (dataKind :: typeVars) dataKind
+    finalTypeArgs : FilledKind environment (dataKind :: typeVars) dataKind
 
   -- | Representation of data types
   record RepData where
@@ -92,10 +98,29 @@ namespace DataTyping
     -- The `Kind` of the data type, e.g. kind of `Maybe` is `Arr Star Star`
     kind : RepKind
     -- All constructors for the data type
-    ctors : List (RepCtor kind)
+    ctors : Vect sumCount (RepCtor kind)
 
-  self : RepType (k :: ks) k
+  datatype : (kind : RepKind) -> Vect n (RepCtor kind) -> RepData
+  datatype = MkData
+
+  self : RepType es (k :: ks) k
   self = var 0
+
+
+namespace Valuing
+
+  data RepArg : RepType es ks Star -> Type where
+    VarArg : RepArg (Var v)
+    EnvArg : RepArg (Other e)
+
+  data RepValue : (rep : RepData) ->
+                  (env : RepKinds e) ->
+                  FilledKind env vars (kind rep) ->
+                  Type where
+    MkValue : (rep : RepData) ->
+              Item i (ctors rep) ctor ->
+              (args : All RepArg (params ctor)) ->
+              RepValue rep (environment ctor) (finalTypeArgs ctor)
 
 
 namespace DataExamples
@@ -103,80 +128,95 @@ namespace DataExamples
   -- Unit : * where
   --   Unit : Unit
   unit : RepData
-  unit = MkData Star
-    [ MkCtor "unit" [] [] []
+  unit = datatype Star
+    [ MkCtor "unit" [] [] [] []
     ]
+
+  -- uuu : RepValue unit [] []
+  -- uuu = MkValue unit (fromFin 0) [] []
 
   -- Bool : * where
   --   True : Bool
   --   False : Bool
   bool : RepData
-  bool = MkData Star
-    [ MkCtor "true"  [] [] []
-    , MkCtor "false" [] [] []
+  bool = datatype Star
+    [ MkCtor "true"  [] [] [] []
+    , MkCtor "false" [] [] [] []
     ]
+
+  -- true : RepValue bool [] []
+  -- true = MkValue bool (fromFin 0) [] []
 
   -- Maybe : * -> * where
   --   Nothing : forall (t : *). Maybe t
   --   Just    : forall (t : *). t -> Maybe t
   maybe : RepData
-  maybe = MkData (Star :=> Star)
-    [ MkCtor "nothing" [Star] []      [var 1]
-    , MkCtor "just"    [Star] [var 1] [var 1]
+  maybe = datatype (Star :=> Star)
+    [ MkCtor "nothing" [] [Star] []      [var 1]
+    , MkCtor "just"    [] [Star] [var 1] [var 1]
     ]
 
   -- Either : * -> * -> * where
   --   Left  : forall (l, r : *). l -> Either l r
   --   Right : forall (l, r : *). r -> Either l r
   either : RepData
-  either = MkData (Star :=> Star :=> Star)
-    [ MkCtor "left"  [Star, Star] [var 1] [var 1, var 2]
-    , MkCtor "right" [Star, Star] [var 2] [var 1, var 2]
+  either = datatype (Star :=> Star :=> Star)
+    [ MkCtor "left"  [] [Star, Star] [var 1] [var 1, var 2]
+    , MkCtor "right" [] [Star, Star] [var 2] [var 1, var 2]
     ]
 
   -- Pair : * -> * -> * where
   --   Pair : forall (l, r : *). l -> r -> Pair l r
   pair : RepData
-  pair = MkData (Star :=> Star :=> Star)
-    [ MkCtor "pair" [Star, Star] [var 1, var 2] [var 1, var 2]
+  pair = datatype (Star :=> Star :=> Star)
+    [ MkCtor "pair" [] [Star, Star] [var 1, var 2] [var 1, var 2]
     ]
 
   -- List : * -> * where
   --   Nil  : forall (t : *). List t
   --   Cons : forall (t : *). t -> List t -> List t
   list : RepData
-  list = MkData (Star :=> Star)
-    [ MkCtor "nil"  [Star] [] [var 1]
-    , MkCtor "cons" [Star] [var 1, self :$ var 1] [var 1]
+  list = datatype (Star :=> Star)
+    [ MkCtor "nil"  [] [Star] [] [var 1]
+    , MkCtor "cons" [] [Star] [var 1, self :$ var 1] [var 1]
     ]
 
   -- Coyoneda : (* -> *) -> * -> * where
   --   Coyo : forall (f : * -> *) (a, b : *). (b -> a) -> (f b) -> Coyoneda f a
   coyoneda : RepData
-  coyoneda = MkData ((Star :=> Star) :=> Star :=> Star)
-    [ MkCtor "coyo" [Star :=> Star, Star, Star]
-                    [var 3 :-> var 2, var 1 :$ var 2]
-                    [var 1, var 2]
+  coyoneda = datatype ((Star :=> Star) :=> Star :=> Star)
+    [ MkCtor "coyo" [] [Star :=> Star, Star, Star]
+                       [var 3 :-> var 2, var 1 :$ var 2]
+                       [var 1, var 2]
     ]
 
   -- Free : (* -> *) -> * -> * where
   --   Pure : forall (f : * -> *) (a : *). a -> Free f a
   --   Next : forall (f : * -> *) (a : *). f (Free f a) -> Free f a
   free : RepData
-  free = MkData ((Star :=> Star) :=> Star :=> Star)
-    [ MkCtor "pure" [Star :=> Star, Star] [var 2] [var 1, var 2]
-    , MkCtor "next" [Star :=> Star, Star]
-                    [var 1 :$ ((self :$ var 1) :$ var 2)]
-                    [var 1, var 2]
+  free = datatype ((Star :=> Star) :=> Star :=> Star)
+    [ MkCtor "pure" [] [Star :=> Star, Star] [var 2] [var 1, var 2]
+    , MkCtor "next" [] [Star :=> Star, Star]
+                       [var 1 :$ ((self :$ var 1) :$ var 2)]
+                       [var 1, var 2]
     ]
 
   -- Exists : (* -> *) -> * where
   --   MkExists : forall (p : * -> *). (forall r. (forall i. p i -> r) -> r) -> Exists p
   exists : RepData
-  exists = MkData ((Star :=> Star) :=> Star)
-    [ MkCtor "mkExists" [Star :=> Star]
-                        [Forall (Forall ((var 1 :$ var 3) :-> var 2) :-> var 2)]
-                        [var 1]
+  exists = datatype ((Star :=> Star) :=> Star)
+    [ MkCtor "mkExists" [] [Star :=> Star]
+                           [Forall (Forall ((var 1 :$ var 3) :-> var 2) :-> var 2)]
+                           [var 1]
+    ]
+
+
+  -- | Here we have a reference to `String : *`
+  -- FullName : * where
+  --   MkFullName : String -> String -> FullName
+  fullName : RepData
+  fullName = datatype Star
+    [ MkCtor "mkFullName" [Star] [] [other 0, other 0] []
     ]
 
 
