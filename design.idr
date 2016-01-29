@@ -2,6 +2,7 @@ import Data.Fin
 import Data.Vect
 import Data.Vect.Quantifiers
 
+%default total
 
 namespace Kinding
 
@@ -22,36 +23,66 @@ namespace Kinding
 namespace VariableReferencing
 
   -- | Reference a variable in scope of a given `Kind`
-  data Item : Fin n -> Vect n t -> t -> Type where
-    Stop : Item FZ (k :: ks) k
-    Pop  : Item i ks k -> Item (FS i) (o :: ks) k
+  data Item : Vect n t -> t -> Fin n -> Type where
+    Stop : Item (k :: ks) k 0
+    Pop  : Item ks k i -> Item (o :: ks) k (FS i)
 
-  fromFin : (i : Fin n) -> (ks : RepKinds n) -> Item i ks (Vect.index i ks)
-  fromFin FZ (v :: vs) = Stop
-  fromFin (FS i) (v :: vs) = Pop (fromFin i vs)
+  FromFin : (ks : RepKinds n) -> (i : Fin n) -> Item ks (Vect.index i ks) i
+  FromFin (v :: vs) FZ     = Stop
+  FromFin (v :: vs) (FS i) = Pop (FromFin vs i)
+
+
+namespace Environments
+
+  FnKind : RepKind
+  FnKind = Star :=> Star :=> Star
+
+  ArrKind : RepKind
+  ArrKind = Star :=> Star
+
+  DefaultEnv : Vect 2 RepKind
+  DefaultEnv = [ FnKind
+               , ArrKind
+               ]
+
+  FnType : Item DefaultEnv FnKind FZ
+  FnType = FromFin DefaultEnv 0
+
+  ArrayType : Item DefaultEnv (Star :=> Star) 1
+  ArrayType = FromFin DefaultEnv 1
 
 
 namespace Typing
 
   -- | Representation of types
-  data RepType : (env : RepKinds e) -> (scope : RepKinds n) -> (kindOfType : RepKind) -> Type where
+  data RepType : (env : RepKinds e) ->
+                 (scope : RepKinds n) ->
+                 (kindOfType : RepKind) ->
+                 Type where
     -- | Type variable
-    Var : Item i ks k -> RepType es ks k
+    Var : Item ks k i -> RepType es ks k
     -- | Universal quantification
     Forall : RepType es (ks ++ [k]) Star -> RepType es ks Star
     -- | Type application
     App : RepType es ks (i :=> o) -> RepType es ks i -> RepType es ks o
-    -- | Function type
+    -- | Function type - TODO: remove in favour of environment?
     Fun : RepType es ks Star -> RepType es ks Star -> RepType es ks Star
     -- | Reference types in the environment
-    Other : Item i es e -> RepType es ks e
+    Other : Item es e i -> RepType es ks e
+
+  extendTypeEnv : RepType es ks k -> RepType (e :: es) ks k
+  extendTypeEnv (Var x) = Var x
+  extendTypeEnv (Forall x) = Forall (extendTypeEnv x)
+  extendTypeEnv (App x y) = App (extendTypeEnv x) (extendTypeEnv y)
+  extendTypeEnv (Fun x y) = Fun (extendTypeEnv x) (extendTypeEnv y)
+  extendTypeEnv (Other x) = Other (Pop x)
 
   -- | Proper types have `Kind` `Star`
   ProperType : RepKinds e -> RepKinds n -> Type
   ProperType es ks = RepType es ks Star
 
   var : (i : Fin n) -> RepType es ks (Vect.index i ks)
-  var i {ks} = Var (fromFin i ks)
+  var i {ks} = Var (FromFin ks i)
 
   infix 5 :$
   (:$) : RepType es ks (i :=> o) -> RepType es ks i -> RepType es ks o
@@ -62,7 +93,7 @@ namespace Typing
   (:->) = Fun
 
   other : (i : Fin n) -> RepType es ks (Vect.index i es)
-  other i {es} = Other (fromFin i es)
+  other i {es} = Other (FromFin es i)
 
 
 namespace Filling
@@ -71,6 +102,17 @@ namespace Filling
   data FilledKind : (env : RepKinds e) -> (typeVars : RepKinds n) -> (kind : RepKind) -> Type where
     Nil  : FilledKind es ts Star
     (::) : RepType es ts d -> FilledKind es ts c -> FilledKind es ts (d :=> c)
+
+  extendFilledEnv : (e : RepKind) -> FilledKind es ks k -> FilledKind (e :: es) ks k
+  extendFilledEnv e [] = []
+  extendFilledEnv e (x :: y) = extendTypeEnv x :: extendFilledEnv e y
+
+  filledType : FilledKind (with Vect (kind :: env)) vars kind ->
+               ProperType (with Vect (kind :: env)) vars
+  filledType xs = go (other 0) xs where
+    go : RepType env vars kind -> FilledKind env vars kind -> ProperType env vars
+    go m [] = m
+    go m (x :: y) = go (m :$ x) y
 
   -- | Example: forall f a. Free f a
   filledKindExample : FilledKind [] [Star :=> Star, Star] ((Star :=> Star) :=> Star :=> Star)
@@ -109,43 +151,41 @@ namespace DataTyping
 
 namespace Valuing
 
-  data RepArg : RepType es ks Star -> Type where
-    VarArg : RepArg (Var v)
-    EnvArg : RepArg (Other e)
-
-  data RepValue : (rep : RepData) ->
-                  (env : RepKinds e) ->
-                  FilledKind env vars (kind rep) ->
-                  Type where
+  -- rep was 3rd arg but https://github.com/idris-lang/Idris-dev/issues/1944
+  data RepValue : ProperType env vars -> Type where
     MkValue : (rep : RepData) ->
-              Item i (ctors rep) ctor ->
-              (args : All RepArg (params ctor)) ->
-              RepValue rep (environment ctor) (finalTypeArgs ctor)
+              Item (ctors rep) ctor i ->
+              (env : RepKinds e) ->
+              (vars : RepKinds v) ->
+              (args : All RepValue (params ctor)) ->
+              (finalArgs : FilledKind env vars (kind rep)) ->
+              RepValue (filledType (extendFilledEnv (kind rep) finalArgs))
 
 
 namespace DataExamples
 
   -- Unit : * where
   --   Unit : Unit
-  unit : RepData
-  unit = datatype Star
+  Unit : RepData
+  Unit = datatype Star
     [ MkCtor "unit" [] [] [] []
     ]
 
-  -- uuu : RepValue unit [] []
-  -- uuu = MkValue unit (fromFin 0) [] []
+  -- unit : Unit
+  unit : RepValue (the (RepType [Star] [] Star) (other 0))
+  unit = MkValue Unit Stop [] [] [] []
 
   -- Bool : * where
   --   True : Bool
   --   False : Bool
-  bool : RepData
-  bool = datatype Star
+  Bool : RepData
+  Bool = datatype Star
     [ MkCtor "true"  [] [] [] []
     , MkCtor "false" [] [] [] []
     ]
 
-  -- true : RepValue bool [] []
-  -- true = MkValue bool (fromFin 0) [] []
+  true : RepValue (the (RepType [Star] [] Star) (other 0))
+  true = MkValue Bool Stop [] [] [] []
 
   -- Maybe : * -> * where
   --   Nothing : forall (t : *). Maybe t
